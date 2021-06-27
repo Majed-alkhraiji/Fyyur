@@ -17,6 +17,7 @@ from sqlalchemy.sql.schema import Table
 from forms import *
 from flask_migrate import Migrate, show
 from datetime import datetime
+import dateutil.parser
 #----------------------------------------------------------------------------#
 # App Config.
 #----------------------------------------------------------------------------#
@@ -65,7 +66,7 @@ class Venue(db.Model):
     seeking_description = db.Column(db.String(500))
     seeking_talent = db.Column(db.Boolean, nullable = False)
 
-    artist = db.relationship("Show")
+    artist = db.relationship("Show", backref='venues')
 
     def __repr__(self):
         return f'<Venue ID:{self.id}, Venue Name:{self.name}, Venue Gernres: {self.genres}>'
@@ -87,6 +88,9 @@ class Artist(db.Model):
     seeking_description = db.Column(db.String(500))
     seeking_venue = db.Column(db.Boolean, nullable = False)
 
+    venue = db.relationship("Show", backref='artists')
+
+
     def __repr__(self):
         return f'<Artist ID:{self.id}, Artist Name:{self.name}, Artist Gernres: {self.genres}>'
 
@@ -104,12 +108,20 @@ class Artist(db.Model):
 #----------------------------------------------------------------------------#
 
 def format_datetime(value, format='medium'):
-  date = dateutil.parser.parse(value)
-  if format == 'full':
-      format="EEEE MMMM, d, y 'at' h:mma"
-  elif format == 'medium':
-      format="EE MM, dd, y h:mma"
-  return babel.dates.format_datetime(date, format, locale='en')
+  if isinstance(value, str):
+        date = dateutil.parser.parse(value)
+        if format == 'full':
+          format="EEEE MMMM, d, y 'at' h:mma"
+        elif format == 'medium':
+          format="EE MM, dd, y h:mma"
+        return babel.dates.format_datetime(date, format, locale='en')
+  else:
+        date = value
+        if format == 'full':
+          format = "EEEE MMMM, d, y 'at' h:mma"
+        elif format == 'medium':
+          format = "EE MM, dd, y h:mma"
+        return babel.dates.format_datetime(date, format, locale='en')
 
 app.jinja_env.filters['datetime'] = format_datetime
 
@@ -166,19 +178,25 @@ def venues():
   # TODO: replace with real venues data.
   #       num_shows should be aggregated based on number of upcoming shows per venue.
 
-  venues = Venue.query.join(Show, Show.venue_id == Venue.id).all()
-  
-  
+  cities = Venue.query.with_entities(Venue.city, Venue.state).distinct()
+    
   data = []
 
-  for venue in venues:
-    data.append({
-    'city': venue.city,
-    'state': venue.state,
-    'id': venue.id,
-    'name': venue.name,
-    'upcoming_shows': past_or_upcoming(venue.start_time, 'upcoming')
-    })
+  for city in cities:
+    tmp_dict = {
+      'city':city.city,
+      'state':city.state,
+      'venues': []
+    }
+
+    venues = Venue.query.filter(Venue.city == city.city)
+
+    for venue in venues:
+      tmp_dict['venues'].append({
+        'id': venue.id,
+        'name': venue.name,
+        'upcoming_shows': Venue.query.join(Show, venue.id == Show.venue_id).filter(Show.start_time > datetime.now()).count()
+      })
 
   return render_template('pages/venues.html', areas=data)
 
@@ -223,18 +241,18 @@ def show_venue(venue_id):
 
   for show in past_shows:
     past_shows_data.append({
-      "artist_id": show[0],
-      "artist_name": show[1],
-      "artist_image_link": show[2],
-      "start_time": show[3]
+      "artist_id": show[1],
+      "artist_name": show[2],
+      "artist_image_link": show[3],
+      "start_time": show[4]
     })
 
   for show in upcoming_shows:
     upcoming_shows_data.append({
-      "artist_id": show[0],
-      "artist_name": show[1],
-      "artist_image_link": show[2],
-      "start_time": show[3]
+      "artist_id": show[1],
+      "artist_name": show[2],
+      "artist_image_link": show[3],
+      "start_time": show[4]
     })  
 
   data = {
@@ -306,7 +324,7 @@ def delete_venue(venue_id):
   # TODO: Complete this endpoint for taking a venue_id, and using
   # SQLAlchemy ORM to delete a record. Handle cases where the session commit could fail.
 
-  venue = Venue.query.filter(Venue.id==venue_id)
+  venue = Venue.query.filter(Venue.id==venue_id).first()
   db.session.delete(venue)
 
   # BONUS CHALLENGE: Implement a button to delete a Venue on a Venue Page, have it so that
@@ -330,7 +348,7 @@ def search_artists():
   # search for "band" should return "The Wild Sax Band".
 
   key = request.form.get('search_term', '')
-  result = Artist.query.filter(Artist.name.ilike(key)).all()
+  result = Artist.query.filter(Artist.name.ilike('%'+ str(key) + '%')).all()
   data = []
   
   for artist in result:
@@ -354,7 +372,6 @@ def show_artist(artist_id):
   # TODO: replace with real artist data from the artist table, using artist_id
 
   artist = Artist.query.get(artist_id)
-  show_info = Artist.query.join(Show, Show.artist_id==artist_id).all()
 
   past_shows = Show.query.filter(Show.artist_id == artist_id).filter(Show.start_time < datetime.now()).join(Artist, Artist.id == Show.artist_id).add_columns(Artist.id, Artist.name , Artist.image_link, Show.start_time).all()
   upcoming_shows = Show.query.filter(Show.artist_id == artist_id).filter(Show.start_time > datetime.now()).join(Artist, Artist.id == Show.artist_id).add_columns(Artist.id, Artist.name , Artist.image_link, Show.start_time).all()
@@ -365,19 +382,20 @@ def show_artist(artist_id):
 
   for show in past_shows:
     past_shows_data.append({
-      "artist_id": show[0],
-      "artist_name": show[1],
-      "artist_image_link": show[2],
-      "start_time": show[3]
+      "artist_id": show[1],
+      "artist_name": show[2],
+      "artist_image_link": show[3],
+      "start_time": show[4]
     })
 
   for show in upcoming_shows:
     upcoming_shows_data.append({
-      "artist_id": show[0],
-      "artist_name": show[1],
-      "artist_image_link": show[2],
-      "start_time": show[3]
+      "artist_id": show[1],
+      "artist_name": show[2],
+      "artist_image_link": show[3],
+      "start_time": show[4]
     })  
+
 
   data = {
     "id": artist.id,
@@ -404,7 +422,7 @@ def show_artist(artist_id):
 @app.route('/artists/<int:artist_id>/edit', methods=['GET'])
 def edit_artist(artist_id):
   form = ArtistForm()
-  artist = Artist.query.filter(Artist.id==artist_id).first()
+  artist = Artist.query.get(artist_id)
   result={
     "id": artist.id,
     "name": artist.name,
@@ -510,14 +528,14 @@ def shows():
 
   data = []
 
-  for show in result:
+  for i in result:
     data.append({
-      "venue_id": show.venue_id,
-      "venue_name": show.venue.name,
-      "artist_id": show.artist_id,
-      "artist_name": show.artist.name,
-      "artist_image_link": show.artist.image_link,
-      "start_time": show.start_time
+      "venue_id": i.venue_id,
+      "venue_name": i.venues.name,
+      "artist_id": i.artist_id,
+      "artist_name": i.artists.name,
+      "artist_image_link": i.artists.image_link,
+      "start_time": i.start_time
     })
 
   
